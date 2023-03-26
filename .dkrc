@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# ---
+# Add your own commands, functions, and variables here.  Define defaults first,
+# then `dk use:` the desired devkit modules, and then define any overrides to
+# the devkit defaults.
+# ---
+
+# Available modules (uncomment to use):
+
+# -- Shell/Generic Modules --
+dk use: bash-kit          # enable `with-bash` command to use different bash versions
+dk use: cram              # run tests using the "cram" functional test tool
+dk use: shell-console     # make the "console" command enter a subshell
+
+# -- Watch Modules --
+dk use: modd-watch        # watch multiple patterns and run different commands on them
+
+# -- Language-Specific Modules --
+dk use: shellcheck        # support running shellcheck (via docker if not installed)
+
+# Define overrides, new commands, functions, etc. here:
