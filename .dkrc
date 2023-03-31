@@ -19,3 +19,13 @@ dk use: modd-watch        # watch multiple patterns and run different commands o
 dk use: shellcheck        # support running shellcheck (via docker if not installed)
 
 # Define overrides, new commands, functions, etc. here:
+
+watch+ "*.md" "src/*" "!.deps/**" "!**/*.md.err" "!**/.~*.md" -- dk test
+
+before "test" mdsh --out "$BASHER_INSTALL_BIN"/c3-mro --compile c3-mro.md
+
+on build mdsh --out bin/c3-mro --compile c3-mro.md
+on build chmod +x bin/c3-mro
+
+export CRAM="--indent=2 --shell=bash --verbose"
+cram.files() { ls c3-mro.md README.md; }
