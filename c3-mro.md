@@ -33,8 +33,10 @@ The test suite is run using [cram](https://github.com/pjeby/cram), using test co
   * [c3::mixin *varname method-set-names...*](#c3mixin-varname-method-set-names)
   * [c3::merge *mros...*](#c3merge-mros)
 - [Code Generation](#code-generation)
-  * [c3::def *name body*](#c3def-name-body)
+  * [c3::defun *name body*](#c3defun-name-body)
   * [c3::methods-changed](#c3methods-changed)
+  * [c3::undef *funcname...*](#c3undef-funcname)
+  * [c3::exists *funcname*](#c3exists-funcname)
 
 <!-- tocstop -->
 
@@ -52,40 +54,69 @@ A *method resolution order* or MRO is a sequence of method set names, represente
 
 ### Implementation Details
 
-c3-mro itself is implemented as a method set (`c3`), so all its function names begin with `c3::`.  It also reserves two global bash variables (associative arrays):
+c3-mro itself is implemented as a method set (`c3`), so all its function names begin with `c3::`.  It also reserves a few global bash variables (associative arrays):
 
 - `c3_mro` maps from method set names to their computed method resolution order, based on the last `c3::resolve` call for that method set name
 - `c3_cache` is a method lookup cache, that avoids the need for repeated searches looking for the same method in a given MRO.
+- `c3_seen` is an associative array tracking methods whose existence (or lack thereof) has affected the contents of `c3_cache`.  If a method named in it is created or deleted, it means the cache is no longer valid and must be cleared (via `c3::methods-changed`)
 
-In case of repeated sourcing or duplicate inclusion of c3-mro,  `c3_cache` is reset to empty (to avoid stale entries), but c3_mro is declared without any specific content, so that existing data won't be lost:
+In case of repeated sourcing or duplicate inclusion of c3-mro, the cache variables are reset to empty (to avoid stale entries), but c3_mro is declared without any specific content, so that existing data won't be lost:
 
 ```bash @shell
-declare -gA c3_mro c3_cache=()
+declare -gA c3_mro c3_cache=() c3_seen=()
 ```
 
 ~~~sh
-# Initially, both arrays are empty
+# Initially, all arrays are empty
 
-  $ declare -p c3_mro c3_cache
-  declare -A c3_mro
-  declare -A c3_cache=()
+  $ dump-tables c3_mro c3_cache c3_seen
+  
+  c3_mro  []
+  ------  --
+  
+  c3_cache  []
+  --------  --
+  
+  c3_seen  []
+  -------  --
 
 # Populate them by declaring inheritance and doing a lookup
 
   $ c3::resolve foo bar
-  $ bar::baz() { :; }
+  $ bar::baz(){ :;}
   $ c3::find-method "${c3_mro[foo]}" baz
-
-  $ declare -p c3_mro c3_cache
-  declare -A c3_mro=(*[foo]="<foo><bar>"*) (glob)
-  declare -A c3_cache=(*["baz<foo><bar>"]="bar::baz"*) (glob)
+  $ dump-tables c3_mro c3_cache c3_seen
+  
+  c3_mro  []
+  ------  ----------
+  bar     <bar>
+  foo     <foo><bar>
+  
+  c3_cache       []
+  -------------  --------
+  baz<bar>       bar::baz
+  baz<foo><bar>  bar::baz
+  
+  c3_seen   []
+  --------  --
+  bar::baz  
+  foo::baz  
 
 # Sourcing a second time clears the cache but not the MROs
 
   $ source c3-mro
-  $ declare -p c3_mro c3_cache
-  declare -A c3_mro=(*[foo]="<foo><bar>"*) (glob)
-  declare -A c3_cache=()
+  $ dump-tables c3_mro c3_cache c3_seen
+  
+  c3_mro  []
+  ------  ----------
+  bar     <bar>
+  foo     <foo><bar>
+  
+  c3_cache  []
+  --------  --
+  
+  c3_seen  []
+  -------  --
 ~~~
 
 ## Method Dispatching
@@ -99,7 +130,7 @@ Of the APIs in this category, most frameworks will only need to use `c3::call` a
 Find the first method of a method set in *mro* named *method* and invoke it with *args*.  If no such method exists, `c3::unknown-method` method is called with *mro method args...*.  You can override that function to control how unknown methods are handled (to do e.g. delegation, error messages, dynamic method generation etc.)
 
 ```bash @shell
-c3::call() { ${c3_cache["$2$1"]-c3::invoke "$1" "$2"} "${@:3}"; }
+c3::call(){ ${c3_cache["$2$1"]-c3::invoke "$1" "$2"} "${@:3}";}
 ```
 
 ### c3::super *mro method-set method args...*
@@ -107,7 +138,7 @@ c3::call() { ${c3_cache["$2$1"]-c3::invoke "$1" "$2"} "${@:3}"; }
 Invoke the next available version of *method* in the subset of *mro* that follows *method-set*, if such a method exists.  If *method-set* is not present in *mro*, all method sets in *mro* are searched.
 
 ```bash @shell
-c3::super() { : "${1#*<$2>}"; ${c3_cache["$3$_"]-c3::invoke "$_" "$3"} "${@:4}";}
+c3::super(){ : "${1#*<$2>}"; ${c3_cache["$3$_"]-c3::invoke "$_" "$3"} "${@:4}";}
 ```
 
 ### c3::invoke *mro method args...*
@@ -115,7 +146,7 @@ c3::super() { : "${1#*<$2>}"; ${c3_cache["$3$_"]-c3::invoke "$_" "$3"} "${@:4}";
 This function is basically the same as `c3::call`, except slightly slower: it's the function that `c3::call` and `c3::super` fall back to if they get a cache miss.  So there is no reason to call it directly (unless perhaps you're writing a cache-optimized inlining of one of those other functions).
 
 ```bash @shell
-c3::invoke() { REPLY= c3::find-method "$1" "$2"; ${c3_cache["$2$1"]-c3::unknown-method "$1" "$2"} "${@:3}"; }
+c3::invoke(){ REPLY= c3::find-method "$1" "$2"; ${c3_cache["$2$1"]-c3::unknown-method "$1" "$2"} "${@:3}";}
 ```
 
 ### c3::find-method *mro method*
@@ -124,10 +155,13 @@ Return true if any method set in *mro* has a method named *method*, with `$REPLY
 
 Search occurs recursively, checking and updating the cache at each level of descent, thereby speeding lookups for method sets with common parents.
 
+Method names whose existence is checked are cached in `c3_seen`, so that the cache can be invalidated if their state of existence changes.
+
 ```bash @shell
-c3::find-method() {
+c3::find-method(){
 	REPLY=("${c3_cache["$2$1"]-}");${REPLY:+return};REPLY=${1%%>*};REPLY=${REPLY#<}::$2
-	if declare -pF "$REPLY" &>/dev/null||{ [[ ${1#*>} ]]&& c3::find-method "${1#*>}" "$2";}
+	c3_seen["$REPLY"]=
+	if c3::exists "$REPLY"||{ [[ ${1#*>} ]]&& c3::find-method "${1#*>}" "$2";}
 	then c3_cache["$2$1"]=$REPLY; else REPLY=; false; fi
 }
 ```
@@ -137,7 +171,7 @@ c3::find-method() {
 Hook for handling unknown methods when using `c3::call` and `c3::super`.
 
 ```bash @shell
-c3::unknown-method() { echo -n "Unknown method: $2 in $*; at ";caller 3;exit 70;} >&2
+c3::unknown-method(){ echo -n "Unknown method: $2 in $*; at ";caller 3;exit 70;} >&2
 ```
 
 The default implementation of this function just prints an error message and exits with error 70 ([EX_SOFTWARE](https://man.freebsd.org/cgi/man.cgi?query=sysexits&sektion=3#DESCRIPTION)).  Most frameworks will want to replace it with a better error message at the least.  But you can also implement dynamic methods by looking up a different method name (similar to Python `__getattr__` or PHP `__call`), and then passing the method name and arguments to that method.
@@ -145,8 +179,8 @@ The default implementation of this function just prints an error message and exi
 For example:
 
 ~~~sh
-  $ proto() { c3::resolve "$@"; c3::def "$1" 'local this=$FUNCNAME; this "$@"'; }
-  $ this()  { c3::call  "${c3_mro["$this"]}" "$@"; }
+  $ proto(){ c3::resolve "$@"; c3::defun "$1" 'local this=$FUNCNAME; this "$@"';}
+  $ this()  { c3::call  "${c3_mro["$this"]}" "$@";}
 
 # Default behavior: error message, exit w/EX_SOFTWARE
 
@@ -157,7 +191,7 @@ For example:
 
 # Custom framework handler for unknown method lookups
 
-  $ c3::unknown-method() {
+  $ c3::unknown-method(){
   >   if REPLY= c3::find-method "$1" unknown-method; then c3::call "$1" unknown-method "${@:2}"; else
   >       echo -n "Unknown method: $2 in $*; at "; caller 3; exit 70
   >   fi >&2
@@ -171,7 +205,7 @@ For example:
 
 # `unknown-method` method invoked if found
 
-  $ demo::unknown-method() { echo "got method $1; args = ${*:2}"; }
+  $ demo::unknown-method(){ echo "got method $1; args = ${*:2}";}
   $ ( demo something 3 )
   got method something; args = 3
 ~~~
@@ -192,7 +226,7 @@ Note: This function overwrites any existing MRO for the named method set, but do
 This means that you should not pass base names to `c3:resolve` that have not already had their own MROs previously set up using `c3::resolve`. And, if you want to support dynamically-changing inheritance (like setting Python's `__bases__` , or Javascript's `setPrototypeOf()`), you may need to recompute downstream MROs when such changes are made.
 
 ```bash @shell
-c3::resolve() {
+c3::resolve(){
 	local -n mro=c3_mro["$1"]
 	case $# in 1|2) mro="<$1>${2:+${c3_mro[$2]=<$2>}}";; 0) return;;
 	*) printf -v mro '<%s>' "$@"; c3::mixin mro "${@:2}"
@@ -224,7 +258,7 @@ Merge the MROs of the named method sets into the MRO stored in the variable name
 False is returned if a consistent order could not be established.
 
 ```bash @shell
-c3::mixin() {
+c3::mixin(){
 	local REPLY t m=(); for t in "${@:2}"; do m+=("${c3_mro[$t]=<$t>}"); done
 	c3::merge ${m[@]+"${m[@]}"} "${!1}" && printf -v "$1" %s "$REPLY"
 }
@@ -235,7 +269,7 @@ c3::mixin() {
 Perform a C3 merge on the given MRO strings, returning success and a new, merged MRO string in `$REPLY`, or failure and a partial MRO string up to the point where an ordering conflict occurred.
 
 ~~~sh
-  $ c3m() { c3::merge "$@" && echo "$REPLY"; }
+  $ c3m(){ c3::merge "$@" && echo "$REPLY";}
 
   $ c3m "<x><o>"   # Single argument is returned as-is
   <x><o>
@@ -257,7 +291,7 @@ Perform a C3 merge on the given MRO strings, returning success and a new, merged
 ~~~
 
 ```bash @shell
-c3::merge() {
+c3::merge(){
 	if (($#==1)); then REPLY=("$1"); return; fi
 	local list head f=$-; set -f; REPLY=("")
 	while (($#)); do
@@ -277,26 +311,34 @@ c3::merge() {
 
 ## Code Generation
 
-### c3::def *name body*
 
-Define a function named *name* with body *body*.  If *name* contains `::` and a function of that name doesn't already exist, the method lookup cache is cleared.
+### c3::defun *name body*
+
+Define a function named *name* with body *body*.  If *name* contains `::` and a function of that name doesn't already exist, the method lookup cache is cleared (unless the function was not part of any cached lookup since its last reset).
 
 ```bash @shell
-c3::def(){ [[ $1 != *::* ]]||declare -pF "$1" &>/dev/null||c3::methods-changed;eval "$1(){ ${2:-:}"$'\n}';}
+c3::defun(){ [[ $1 != *::* ]]||c3::exists "$1"||${c3_seen["$1"]+c3::methods-changed};eval "$1(){ ${2:-:}"$'\n}';}
 ```
 
 ~~~sh
 # Start with a known cache
 
   $ c3::methods-changed
-  $ object::__init__() { :; }
+  $ object::__init__(){ :;}
   $ c3::find-method "<object>" __init__
-  $ declare -p c3_cache
-  declare -A c3_cache=(["__init__<object>"]="object::__init__" )
+  $ dump-tables c3_cache c3_seen
+  
+  c3_cache          []
+  ----------------  ----------------
+  __init__<object>  object::__init__
+  
+  c3_seen           []
+  ----------------  --
+  object::__init__  
 
 # Define a plain function
 
-  $ c3::def foo bar
+  $ c3::defun foo bar
   $ type foo
   foo is a function
   foo () 
@@ -306,32 +348,110 @@ c3::def(){ [[ $1 != *::* ]]||declare -pF "$1" &>/dev/null||c3::methods-changed;e
 
 # Cache is unchanged after definition, since function name is not a method:
 
-  $ declare -p c3_cache
-  declare -A c3_cache=(["__init__<object>"]="object::__init__" )
+  $ dump-tables c3_cache c3_seen
+  
+  c3_cache          []
+  ----------------  ----------------
+  __init__<object>  object::__init__
+  
+  c3_seen           []
+  ----------------  --
+  object::__init__  
 
-# Declaring a method wipes the cache:
+# Declaring a method doesn't wipe the cache if it's not in the seen table:
 
-  $ c3::def foo::bar baz
-  $ declare -p c3_cache
-  declare -A c3_cache=()
+  $ c3::defun foo::bar baz
+  $ dump-tables c3_cache c3_seen
+  
+  c3_cache          []
+  ----------------  ----------------
+  __init__<object>  object::__init__
+  
+  c3_seen           []
+  ----------------  --
+  object::__init__  
 
-# Populate the cache again:
+# or if it already exists:
+
+  $ c3::find-method "<foo>" bar
+  $ c3::defun foo::bar baz
+  $ dump-tables c3_cache c3_seen
+  
+  c3_cache          []
+  ----------------  ----------------
+  __init__<object>  object::__init__
+  bar<foo>          foo::bar
+  
+  c3_seen           []
+  ----------------  --
+  foo::bar          
+  object::__init__  
+
+# But deleting a seen function will clear it
+
+  $ c3::undef foo::bar
+  $ dump-tables c3_cache c3_seen
+  
+  c3_cache  []
+  --------  --
+  
+  c3_seen  []
+  -------  --
+
+# Repopulate the cache
 
   $ c3::find-method "<object>" __init__
-  $ declare -p c3_cache
-  declare -A c3_cache=(["__init__<object>"]="object::__init__" )
+  $ c3::find-method "<foo>" bar
+  [1]
 
-# And it doesn't get cleared this time, since the method already existed:
 
-  $ c3::def foo::bar bing
-  $ declare -p c3_cache
-  declare -A c3_cache=(["__init__<object>"]="object::__init__" )
+# Even though the foo::bar lookup failed, the *fact* it failed affects the cache
+# contents, so it's still tracked as a seen method:
+
+  $ dump-tables c3_cache c3_seen
+  
+  c3_cache          []
+  ----------------  ----------------
+  __init__<object>  object::__init__
+  
+  c3_seen           []
+  ----------------  --
+  foo::bar          
+  object::__init__  
+
+# So creating the known-missing foo::bar will clear the cache again
+
+  $ c3::defun foo::bar baz
+  $ dump-tables c3_cache c3_seen
+  
+  c3_cache  []
+  --------  --
+  
+  c3_seen  []
+  -------  --
 ~~~
+
 
 ### c3::methods-changed
 
-This function should be called whenever the method cache is invalidated, i.e. if you `unset` a method function, or create a new one.  `c3::def` calls this automatically if it creates a new method, but if you create or delete a method yourself, calling this will prevent inaccurate dispatching.
+This function should be called whenever the method cache is invalidated, i.e. if you `unset` a method function, or create a new one.  `c3::defun` and `c3::undef` call this automatically if creating or deleting a method whose state has been queried for a cached lookup, but if you methods are created or deleted in some other way, you may need to call this to prevent inaccurate dispatching.
 
 ```bash @shell
-c3::methods-changed() { c3_cache=(); }
+c3::methods-changed(){ c3_cache=(); c3_seen=();}
+```
+
+### c3::undef *funcname...*
+
+Delete the named functions (via `unset -f`), clearing the method lookup cache if any of the functions exist and were part of a cached lookup.
+
+```bash @shell
+c3::undef(){ local m; for m; do c3::exists "$m" && unset -f "$m" && ${c3_seen["$m"]+c3::methods-changed} ||:; done;}
+```
+
+### c3::exists *funcname*
+
+Return truth if a function named *funcname* exists.
+
+```bash @shell
+c3::exists(){ declare -pF "$1" &>/dev/null;}
 ```

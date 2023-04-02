@@ -14,7 +14,7 @@ For example, here's a toy example of a prototype-based OO framework using bash f
 
 ~~~sh
   $ source c3-mro
-  $ proto() { c3::resolve "$@"; c3::def "$1" 'local this=$FUNCNAME; this "$@"'; }
+  $ proto() { c3::resolve "$@"; c3::defun "$1" 'local this=$FUNCNAME; this "$@"'; }
   $ this()  { c3::call  "${c3_mro["$this"]}" "$@"; }
   $ super() { c3::super "${c3_mro["$this"]}" "${FUNCNAME[1]%::*}" "$@"; }
 

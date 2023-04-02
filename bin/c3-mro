@@ -19,27 +19,28 @@
 # COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-declare -gA c3_mro c3_cache=()
-c3::call() { ${c3_cache["$2$1"]-c3::invoke "$1" "$2"} "${@:3}"; }
-c3::super() { : "${1#*<$2>}"; ${c3_cache["$3$_"]-c3::invoke "$_" "$3"} "${@:4}";}
-c3::invoke() { REPLY= c3::find-method "$1" "$2"; ${c3_cache["$2$1"]-c3::unknown-method "$1" "$2"} "${@:3}"; }
-c3::find-method() {
+declare -gA c3_mro c3_cache=() c3_seen=()
+c3::call(){ ${c3_cache["$2$1"]-c3::invoke "$1" "$2"} "${@:3}";}
+c3::super(){ : "${1#*<$2>}"; ${c3_cache["$3$_"]-c3::invoke "$_" "$3"} "${@:4}";}
+c3::invoke(){ REPLY= c3::find-method "$1" "$2"; ${c3_cache["$2$1"]-c3::unknown-method "$1" "$2"} "${@:3}";}
+c3::find-method(){
 	REPLY=("${c3_cache["$2$1"]-}");${REPLY:+return};REPLY=${1%%>*};REPLY=${REPLY#<}::$2
-	if declare -pF "$REPLY" &>/dev/null||{ [[ ${1#*>} ]]&& c3::find-method "${1#*>}" "$2";}
+	c3_seen["$REPLY"]=
+	if c3::exists "$REPLY"||{ [[ ${1#*>} ]]&& c3::find-method "${1#*>}" "$2";}
 	then c3_cache["$2$1"]=$REPLY; else REPLY=; false; fi
 }
-c3::unknown-method() { echo -n "Unknown method: $2 in $*; at ";caller 3;exit 70;} >&2
-c3::resolve() {
+c3::unknown-method(){ echo -n "Unknown method: $2 in $*; at ";caller 3;exit 70;} >&2
+c3::resolve(){
 	local -n mro=c3_mro["$1"]
 	case $# in 1|2) mro="<$1>${2:+${c3_mro[$2]=<$2>}}";; 0) return;;
 	*) printf -v mro '<%s>' "$@"; c3::mixin mro "${@:2}"
 	esac
 }
-c3::mixin() {
+c3::mixin(){
 	local REPLY t m=(); for t in "${@:2}"; do m+=("${c3_mro[$t]=<$t>}"); done
 	c3::merge ${m[@]+"${m[@]}"} "${!1}" && printf -v "$1" %s "$REPLY"
 }
-c3::merge() {
+c3::merge(){
 	if (($#==1)); then REPLY=("$1"); return; fi
 	local list head f=$-; set -f; REPLY=("")
 	while (($#)); do
@@ -54,5 +55,7 @@ c3::merge() {
 	[[ $f == *f* ]] || set +f
 	((!$#))  # fail if unmerged args
 }
-c3::def(){ [[ $1 != *::* ]]||declare -pF "$1" &>/dev/null||c3::methods-changed;eval "$1(){ ${2:-:}"$'\n}';}
-c3::methods-changed() { c3_cache=(); }
+c3::defun(){ [[ $1 != *::* ]]||c3::exists "$1"||${c3_seen["$1"]+c3::methods-changed};eval "$1(){ ${2:-:}"$'\n}';}
+c3::methods-changed(){ c3_cache=(); c3_seen=();}
+c3::undef(){ local m; for m; do c3::exists "$m" && unset -f "$m" && ${c3_seen["$m"]+c3::methods-changed} ||:; done;}
+c3::exists(){ declare -pF "$1" &>/dev/null;}
